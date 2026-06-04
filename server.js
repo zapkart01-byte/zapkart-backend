@@ -38,10 +38,15 @@ app.use(helmet())
 // Configure Cross-Origin Resource Sharing (CORS) limits
 const allowedOrigins = [
   'http://localhost:5173', // Local Vite Admin App
+  'http://localhost:8081', // Local Expo Store App (web)
+  'http://localhost:19006', // Expo Web alternate port
 ]
 
 if (process.env.CORS_ORIGIN) {
-  allowedOrigins.push(process.env.CORS_ORIGIN)
+  // Support comma-separated origins in CORS_ORIGIN env var
+  process.env.CORS_ORIGIN.split(',').forEach((origin) => {
+    allowedOrigins.push(origin.trim())
+  })
 }
 
 const corsOptions = {
