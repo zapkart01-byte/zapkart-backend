@@ -6,7 +6,7 @@ const { validateStoreRegister, validateRiderRegister } = require('../middleware/
 const router = express.Router()
 
 // Creates a store registration record for a store owner.
-router.post('/stores/register', verifyToken, requireRole('store_owner'), otpLimiter, validateStoreRegister, async (req, res) => {
+router.post('/stores/register', otpLimiter, validateStoreRegister, async (req, res) => {
   const payload = req.body
   const { data, error } = await supabase
     .from('stores')
@@ -31,7 +31,7 @@ router.post('/stores/register', verifyToken, requireRole('store_owner'), otpLimi
 })
 
 // Creates a rider registration record for a rider account.
-router.post('/riders/register', verifyToken, requireRole('rider'), otpLimiter, validateRiderRegister, async (req, res) => {
+router.post('/riders/register', verifyToken, otpLimiter, validateRiderRegister, async (req, res) => {
   const payload = req.body
   const { data, error } = await supabase
     .from('riders')
