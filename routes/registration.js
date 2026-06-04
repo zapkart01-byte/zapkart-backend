@@ -8,7 +8,7 @@ const router = express.Router()
 // Creates a store registration record for a store owner.
 router.post('/stores/register', otpLimiter, validateStoreRegister, async (req, res) => {
   const payload = req.body
-  const { data, error } = await supabase
+  const { data: store, error: storeError } = await supabase
     .from('stores')
     .insert({
       owner_name: payload.owner_name,
@@ -26,8 +26,29 @@ router.post('/stores/register', otpLimiter, validateStoreRegister, async (req, r
     .select('*')
     .single()
 
-  if (error) return res.status(500).json({ message: 'Failed to register store', error: error.message })
-  return res.status(201).json(data)
+  if (storeError) return res.status(500).json({ message: 'Failed to register store', error: storeError.message })
+
+  // Insert store KYC documents into store_documents table
+  if (payload.documents && Array.isArray(payload.documents) && payload.documents.length > 0) {
+    const documentsToInsert = payload.documents.map((doc) => ({
+      store_id: store.id,
+      document_type: doc.type,
+      document_url: doc.url,
+      verified: false,
+    }))
+
+    const { error: docsError } = await supabase
+      .from('store_documents')
+      .insert(documentsToInsert)
+
+    if (docsError) {
+      // Clean up the created store to prevent orphaned/incomplete store profiles
+      await supabase.from('stores').delete().eq('id', store.id)
+      return res.status(500).json({ message: 'Failed to save store KYC documents', error: docsError.message })
+    }
+  }
+
+  return res.status(201).json(store)
 })
 
 // Creates a rider registration record for a rider account.
