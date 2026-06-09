@@ -28,6 +28,7 @@ const notificationsRoutes = require('./routes/notifications')
 const notificationRoutesNew = require('./routes/notificationRoutes')
 const trackingRoutes = require('./routes/tracking')
 const ridersRoutes = require('./routes/riders')
+const aiRoutes = require('./routes/ai')
 
 // Initialize Redis connection
 try {
@@ -107,6 +108,7 @@ app.use('/notifications', notificationsRoutes)
 app.use('/api/notifications', notificationRoutesNew)
 app.use('/tracking', trackingRoutes)
 app.use('/riders', ridersRoutes)
+app.use('/ai', aiRoutes)
 
 // Fallback 404 handler for invalid routes
 app.use((req, res, next) => {
