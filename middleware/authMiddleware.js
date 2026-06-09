@@ -1,17 +1,24 @@
-const rateLimit = require('express-rate-limit')
+/**
+ * ═══════════════════════════════════════════════════════
+ * Authentication Middleware (Modernized)
+ * ═══════════════════════════════════════════════════════
+ * JWT verification middleware using the new JWTVerificationService
+ * Supports both Supabase and Firebase tokens during transition
+ * ═══════════════════════════════════════════════════════
+ */
+
 const jwtVerificationService = require('../services/jwtVerificationService')
 const { AuthError } = require('../services/jwtVerificationService')
 const { supabase } = require('../config/supabase')
 const { logInfo, logError } = require('../utils/logger')
 
 /**
- * ZapKart Authentication and Authorization Middleware
- * Verifies Supabase JWT tokens, performs role-based access checks, and configures rate limiting.
+ * Verify JWT token from Authorization header
+ * Attaches decoded user claims to req.user
  */
-
-// Verifies the JWT token from the Authorization header and appends user to request
 async function verifyToken(req, res, next) {
   const authHeader = req.headers.authorization
+  
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ 
       error_code: 'MISSING_TOKEN',
@@ -21,25 +28,26 @@ async function verifyToken(req, res, next) {
   }
 
   const token = authHeader.split('Bearer ')[1]
+  
   try {
+    // Verify token using JWTVerificationService
     const claims = await jwtVerificationService.verifyToken(token)
     
-    // Map Supabase claims to req.user with backward-compatible field names
+    // Attach user claims to request
     req.user = {
       uid: claims.user_id,
       user_id: claims.user_id,
       email: claims.email,
       phone: claims.phone,
-      phone_number: claims.phone, // backward compat with old Firebase field name
       role: claims.role,
       issuer: claims.issuer
     }
-
+    
     logInfo('JWT verification successful', { 
       user_id: claims.user_id,
       issuer: claims.issuer
     })
-
+    
     next()
   } catch (error) {
     if (error instanceof AuthError) {
@@ -49,9 +57,9 @@ async function verifyToken(req, res, next) {
         request_id: req.id
       })
     }
-
+    
     logError('JWT verification error', { error: error.message })
-
+    
     return res.status(401).json({
       error_code: 'VERIFICATION_FAILED',
       message: 'Invalid or expired authorization token',
@@ -60,7 +68,10 @@ async function verifyToken(req, res, next) {
   }
 }
 
-// Verifies that the authenticated user possesses the required role for the requested operation
+/**
+ * Require specific role for accessing endpoint
+ * Must be used after verifyToken middleware
+ */
 function requireRole(role) {
   return async (req, res, next) => {
     if (!req.user) {
@@ -70,7 +81,7 @@ function requireRole(role) {
         request_id: req.id
       })
     }
-
+    
     const uid = req.user.uid
     const email = req.user.email
     const phone = req.user.phone
@@ -90,7 +101,7 @@ function requireRole(role) {
             request_id: req.id
           })
         }
-
+        
         if (role === 'superadmin' && admin.role !== 'super_admin') {
           return res.status(403).json({ 
             error_code: 'FORBIDDEN',
@@ -159,83 +170,7 @@ function requireRole(role) {
   }
 }
 
-// Global rate limiter for all endpoints to prevent API abuse
-const globalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-  message: { message: 'Too many requests from this IP, please try again after 15 minutes' },
-  standardHeaders: true,
-  legacyHeaders: false,
-})
-
-// Rate limiter for OTP requests to prevent brute force and spam
-const otpLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000,
-  max: 3,
-  message: { message: 'Too many OTP requests from this IP, please try again after 10 minutes' },
-  standardHeaders: true,
-  legacyHeaders: false,
-})
-
-// Rate limiter for login requests to protect authentication forms
-const loginLimiter = rateLimit({
-  windowMs: 30 * 60 * 1000,
-  max: 5,
-  message: { message: 'Too many login attempts from this IP, please try again after 30 minutes' },
-  standardHeaders: true,
-  legacyHeaders: false,
-})
-
-// Rate limiter for order placement transactions to block script runs
-const orderLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000,
-  max: 5,
-  keyGenerator: (req) => req.user?.uid || 'anonymous',
-  message: { message: 'Too many order placements, please wait a minute' },
-  standardHeaders: true,
-  legacyHeaders: false,
-  validate: { ip: false }
-})
-
-// Rate limiter for promo coupon code validation queries
-const couponLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000,
-  max: 5,
-  keyGenerator: (req) => req.user?.uid || 'anonymous',
-  message: { message: 'Too many coupon validation attempts, please wait a minute' },
-  standardHeaders: true,
-  legacyHeaders: false,
-  validate: { ip: false }
-})
-
-// Rate limiter for rider active GPS tracking updates
-const gpsLimiter = rateLimit({
-  windowMs: 10 * 1000,
-  max: 3,
-  keyGenerator: (req) => req.user?.uid || 'anonymous',
-  message: { message: 'GPS updates throttled, maximum 3 updates per 10 seconds' },
-  standardHeaders: true,
-  legacyHeaders: false,
-  validate: { ip: false }
-})
-
-// Rate limiter for admin broadcast notifications to prevent spamming users
-const broadcastLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000,
-  max: 5,
-  message: { message: 'Too many broadcast attempts, maximum 5 broadcasts per minute' },
-  standardHeaders: true,
-  legacyHeaders: false,
-})
-
 module.exports = {
   verifyToken,
-  requireRole,
-  globalLimiter,
-  otpLimiter,
-  loginLimiter,
-  orderLimiter,
-  couponLimiter,
-  gpsLimiter,
-  broadcastLimiter,
+  requireRole
 }

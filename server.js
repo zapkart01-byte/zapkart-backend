@@ -6,6 +6,8 @@ const http = require('http')
 const { Server } = require('socket.io')
 const cron = require('node-cron')
 
+const config = require('./config/environment')
+const { initializeRedis } = require('./utils/redisClient')
 const { globalLimiter } = require('./middleware/auth')
 const { setIo } = require('./config/socket')
 const { runWeeklySettlement, checkCODLimits } = require('./services/settlementService')
@@ -13,6 +15,7 @@ const { logInfo, logError } = require('./utils/logger')
 
 // Import route handlers
 const authRoutes = require('./routes/auth')
+const authMobileRoutes = require('./routes/authMobile')
 const publicRoutes = require('./routes/public')
 const productsRoutes = require('./routes/products')
 const storesRoutes = require('./routes/stores')
@@ -22,12 +25,21 @@ const analyticsRoutes = require('./routes/analytics')
 const ordersRoutes = require('./routes/orders')
 const financeRoutes = require('./routes/finance')
 const notificationsRoutes = require('./routes/notifications')
+const notificationRoutesNew = require('./routes/notificationRoutes')
 const trackingRoutes = require('./routes/tracking')
 const ridersRoutes = require('./routes/riders')
 
+// Initialize Redis connection
+try {
+  initializeRedis()
+} catch (error) {
+  logError('Failed to initialize Redis', { error: error.message })
+  process.exit(1)
+}
+
 // Initialize Express application
 const app = express()
-const PORT = process.env.PORT || 3000
+const PORT = config.port
 
 // Create HTTP server wrapping Express
 const server = http.createServer(app)
@@ -82,6 +94,7 @@ app.get('/health', (req, res) => {
 
 // Register application routes
 app.use('/auth', authRoutes)
+app.use('/auth', authMobileRoutes)
 app.use('/public', publicRoutes)
 app.use('/products', productsRoutes)
 app.use('/stores', storesRoutes)
@@ -91,6 +104,7 @@ app.use('/analytics', analyticsRoutes)
 app.use('/orders', ordersRoutes)
 app.use('/finance', financeRoutes)
 app.use('/notifications', notificationsRoutes)
+app.use('/api/notifications', notificationRoutesNew)
 app.use('/tracking', trackingRoutes)
 app.use('/riders', ridersRoutes)
 
@@ -161,6 +175,6 @@ cron.schedule('0 * * * *', async () => {
 server.listen(PORT, () => {
   logInfo('ZapKart API Server successfully started', {
     port: PORT,
-    environment: process.env.NODE_ENV || 'development'
+    environment: config.nodeEnv
   })
 })
