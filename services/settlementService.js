@@ -47,8 +47,11 @@ async function runWeeklySettlement(triggeredBy = 'system') {
     const gross = (orders || []).reduce((sum, order) => sum + Number(order.subtotal || 0), 0)
     if (gross <= 0) continue
 
-    const commissionRate = Number(store.commission_rate ?? settings?.commission_rate ?? 0.18)
-    const commissionDeducted = Math.round(gross * commissionRate)
+    // Use the actual commission charged per order (computed with per-category
+    // variable rates at order time), not a single flat store rate.
+    const commissionDeducted = Math.round(
+      (orders || []).reduce((sum, order) => sum + Number(order.commission_amount || 0), 0)
+    )
     const netAmount = Math.max(0, Math.round(gross - commissionDeducted))
 
     const { data: payout, error: payoutError } = await supabase
@@ -81,7 +84,21 @@ async function runWeeklySettlement(triggeredBy = 'system') {
   if (ridersError) throw new Error(ridersError.message)
 
   for (const rider of riders || []) {
-    const deliveryEarnings = Number(rider.weekly_delivery_earnings || 0)
+    // Sum rider event bonuses from delivered orders in the settlement window.
+    const { data: riderOrders, error: riderOrdersError } = await supabase
+      .from('orders')
+      .select('rider_event_bonus')
+      .eq('rider_id', rider.id)
+      .eq('status', 'delivered')
+      .gte('created_at', periodFrom)
+      .lte('created_at', periodTo)
+
+    if (riderOrdersError) {
+      logError('Rider settlement order query failed', { riderId: rider.id, error: riderOrdersError.message })
+    }
+
+    const eventBonusTotal = (riderOrders || []).reduce((sum, o) => sum + Number(o.rider_event_bonus || 0), 0)
+    const deliveryEarnings = Number(rider.weekly_delivery_earnings || 0) + eventBonusTotal
     const codCollected = Number(rider.cod_balance || 0)
     if (deliveryEarnings === 0 && codCollected === 0) continue
 
@@ -113,14 +130,31 @@ async function runWeeklySettlement(triggeredBy = 'system') {
     }
   }
 
+  // Track total offer/discount cost absorbed by ZapKart in this period (reporting).
+  let offerCostTotal = 0
+  const { data: discountOrders, error: discountError } = await supabase
+    .from('orders')
+    .select('discount_amount')
+    .eq('status', 'delivered')
+    .gte('created_at', periodFrom)
+    .lte('created_at', periodTo)
+  if (!discountError) {
+    offerCostTotal = Math.round((discountOrders || []).reduce((sum, o) => sum + Number(o.discount_amount || 0), 0))
+  }
+
   await supabase.from('audit_log').insert({
     admin_id: triggeredBy,
     action: 'INITIATE_PAYOUT',
     target_type: 'settlement',
-    new_value: { createdPayouts: createdPayouts.length },
+    new_value: {
+      createdPayouts: createdPayouts.length,
+      period_from: periodFrom.slice(0, 10),
+      period_to: periodTo.slice(0, 10),
+      offer_cost_total: offerCostTotal,
+    },
   })
 
-  logInfo('Weekly settlement completed', { createdPayouts: createdPayouts.length })
+  logInfo('Weekly settlement completed', { createdPayouts: createdPayouts.length, offerCostTotal })
   return createdPayouts
 }
 

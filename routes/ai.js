@@ -4,6 +4,9 @@ const router = express.Router()
 const { verifyToken, requireRole } = require('../middleware/auth')
 const { body, validationResult } = require('express-validator')
 const Groq = require('groq-sdk')
+const fs = require('fs')
+const os = require('os')
+const path = require('path')
 const { supabase } = require('../config/supabase')
 
 // Initialize Groq client
@@ -136,44 +139,120 @@ Example output:
   })
 
   const responseText = completion.choices[0]?.message?.content || '[]'
-  
-  // Extract JSON from response (handle markdown code blocks)
-  let jsonText = responseText.trim()
+
+  const parsed = normalizeItems(extractJsonArray(responseText))
+  if (parsed.length > 0) return parsed
+
+  // Fallback: simple comma-split parsing if the model returned nothing usable
+  return text.split(',').map(item => ({
+    name: item.trim(),
+    quantity: 1
+  })).filter(it => it.name)
+}
+
+/**
+ * Normalize a raw model JSON array into the { name, quantity } shape
+ * used by the product search loop. Accepts items that use either
+ * "name" or "item" keys and an optional "unit".
+ */
+function normalizeItems(rawArray) {
+  if (!Array.isArray(rawArray)) return []
+  return rawArray
+    .map((it) => {
+      const baseName = (it.name || it.item || '').toString().trim()
+      if (!baseName) return null
+      const name = it.unit ? `${baseName} ${it.unit}`.trim() : baseName
+      const quantity = Number(it.quantity) > 0 ? Number(it.quantity) : 1
+      return { name, quantity }
+    })
+    .filter(Boolean)
+}
+
+/**
+ * Extract a JSON array from a model response that may be wrapped in
+ * markdown fences or include surrounding prose.
+ */
+function extractJsonArray(responseText) {
+  let jsonText = (responseText || '').trim()
   if (jsonText.startsWith('```')) {
     jsonText = jsonText.replace(/```json?\n?/g, '').replace(/```/g, '').trim()
   }
-
+  // If the model returned an explicit not-a-list error object, treat as empty.
+  if (jsonText.startsWith('{')) {
+    try {
+      const obj = JSON.parse(jsonText)
+      if (obj && obj.error) return []
+    } catch (_) { /* fall through */ }
+  }
   try {
     return JSON.parse(jsonText)
-  } catch (error) {
-    console.error('Failed to parse Groq response:', responseText)
-    // Fallback: simple parsing
-    return text.split(',').map(item => ({
-      name: item.trim(),
-      quantity: 1
-    }))
+  } catch (_) {
+    const start = jsonText.indexOf('[')
+    const end = jsonText.lastIndexOf(']')
+    if (start !== -1 && end !== -1 && end > start) {
+      try {
+        return JSON.parse(jsonText.slice(start, end + 1))
+      } catch (_) { /* fall through */ }
+    }
+    return []
   }
 }
 
 /**
- * Parse image using Groq Vision (placeholder - not fully supported yet)
+ * Parse a photo of a shopping list using Groq vision.
+ * Accepts a base64-encoded JPEG (with or without data URL prefix).
  */
 async function parseImageWithGroq(base64Image) {
-  // Groq doesn't have full vision support yet
-  // For now, return empty or use OCR alternative
-  return []
+  const cleaned = (base64Image || '').replace(/^data:image\/[a-zA-Z]+;base64,/, '')
+  if (!cleaned) return []
+
+  const completion = await groq.chat.completions.create({
+    model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+    max_tokens: 800,
+    temperature: 0.2,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${cleaned}` } },
+          {
+            type: 'text',
+            text: 'This is a grocery shopping list image. It may be handwritten in Hindi or English. Extract all grocery items and quantities. Return ONLY a JSON array: [{"name":"item name","quantity":1}]. If this is not a grocery list, return {"error":"not_a_list"}.'
+          }
+        ]
+      }
+    ]
+  })
+
+  const responseText = completion.choices[0]?.message?.content || '[]'
+  return normalizeItems(extractJsonArray(responseText))
 }
 
 /**
- * Parse voice using Groq Whisper
+ * Parse a voice recording: transcribe with Whisper, then reuse the
+ * text parser on the transcription. Accepts base64-encoded audio
+ * (with or without data URL prefix).
  */
 async function parseVoiceWithGroq(audioBase64) {
-  // Groq supports Whisper model for transcription
-  // Convert base64 to buffer and transcribe
-  // Then parse transcription as text
-  
-  // For now, return empty
-  return []
+  const cleaned = (audioBase64 || '').replace(/^data:audio\/[a-zA-Z0-9.+-]+;base64,/, '')
+  if (!cleaned) return []
+
+  const tmpFile = path.join(os.tmpdir(), `zapkart-voice-${Date.now()}.m4a`)
+  try {
+    fs.writeFileSync(tmpFile, Buffer.from(cleaned, 'base64'))
+
+    const transcription = await groq.audio.transcriptions.create({
+      file: fs.createReadStream(tmpFile),
+      model: 'whisper-large-v3',
+      language: 'hi'
+    })
+
+    const text = (transcription && transcription.text ? transcription.text : '').trim()
+    if (!text) return []
+    return await parseTextWithGroq(text)
+  } finally {
+    try { fs.unlinkSync(tmpFile) } catch (_) { /* ignore cleanup errors */ }
+  }
 }
 
 module.exports = router

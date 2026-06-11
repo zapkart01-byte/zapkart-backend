@@ -175,19 +175,20 @@ router.post('/', verifyToken, requireRole('customer'), orderLimiter, validateCre
       }
       tempDiscount = Math.round(Math.max(0, tempDiscount))
 
-      // Daily budget check
-      if (offer.daily_budget) {
+      // Daily budget check (PLATFORM-WIDE, from platform_settings.offer_budget_daily)
+      const dailyBudget = Number(settings.offer_budget_daily || 0)
+      if (dailyBudget > 0) {
         const todayStart = new Date()
         todayStart.setHours(0, 0, 0, 0)
+        // Sum discount spend across ALL offers today (platform-wide budget)
         const { data: usages, error: usagesError } = await supabase
           .from('coupon_usage')
           .select('discount_amount')
-          .eq('offer_id', offer.id)
           .gte('used_at', todayStart.toISOString())
         if (usagesError) throw usagesError
-        const totalSpentToday = (usages || []).reduce((sum, u) => sum + Number(u.discount_amount), 0)
-        if (totalSpentToday + tempDiscount > Number(offer.daily_budget)) {
-          return res.status(400).json({ message: "Today's budget limit for this coupon has been reached. Try again tomorrow." })
+        const totalSpentToday = (usages || []).reduce((sum, u) => sum + Number(u.discount_amount || 0), 0)
+        if (totalSpentToday + tempDiscount > dailyBudget) {
+          return res.status(400).json({ message: "Today's platform offer budget has been reached. Please try again tomorrow." })
         }
       }
 

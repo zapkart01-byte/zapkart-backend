@@ -1,0 +1,1033 @@
+﻿
+ZapKart Platform
+MASTER BUILD DOCUMENT
+Single Unified PRD v4.0 â€” All Apps, All Changes
+June 2026  |  Production Grade  |  CONFIDENTIAL
+FOR AI AGENT â€” READ THIS ENTIRE DOCUMENT BEFORE WRITING ANY CODE
+This is the single source of truth for the entire ZapKart platform.
+All previous documents are superseded by this one.
+Build in phase order: Admin â†’ Backend â†’ Store â†’ Rider â†’ Customer.
+Stop and confirm with user after every module. Never skip ahead.
+All currency: INR rupee symbol only. Never use dollar signs anywhere.
+Model to use: Claude Sonnet 4.5 for most tasks. Opus 4.6 for GPS and security only.
+
+
+Section 1 â€” Project Overview
+App
+Type
+Auth
+Hosting
+Status
+zapkart-admin
+React.js web
+Supabase email + password
+Vercel
+Built â€” minor auth fix needed
+zapkart-backend
+Node.js Express
+Supabase JWT verification
+Render
+Built â€” minor auth fix needed
+zapkart-store
+React Native Expo
+2Factor.in OTP + Supabase
+Play Store
+In progress
+zapkart-rider
+React Native Expo
+2Factor.in OTP + Supabase
+Play Store
+Not started
+zapkart-customer
+React Native Expo
+2Factor.in OTP + Supabase
+Play Store
+Not started
+
+Business Model
+Platform commission: Variable by category (3% dairy to 20% premium).
+Platform markup: INR 1 added to every product price shown to customer.
+Delivery fee: Dynamic formula â€” guarantees minimum ZapKart profit on every order.
+Rider base rate: INR 25 under 2km, INR 35 at 2-4km, INR 50 above 4km.
+Rider bonuses: Paid from commission budget, not delivery fee.
+COD settlement: Riders hold cash, settle weekly via bank transfer.
+Store payout: Every Monday â€” gross sales minus commission percentage.
+
+
+Section 2 â€” Authentication (Final Decisions)
+Authentication Architecture
+Admin panel: Supabase email and password. No Firebase. No OTP.
+Store app: 2Factor.in SMS OTP verified via Supabase Phone Auth.
+Rider app: 2Factor.in SMS OTP verified via Supabase Phone Auth.
+Customer app: 2Factor.in SMS OTP verified via Supabase Phone Auth.
+Firebase: Kept ONLY for FCM push notifications. NOT for any login.
+Google Sign-In: Not used anywhere. Removed completely.
+OTPless: Not used. Replaced by 2Factor.in SMS OTP.
+
+
+2.1 Firebase â€” What Stays and What Goes
+Item
+Status
+Reason
+Firebase project
+KEEP
+Needed for FCM push notifications
+google-services.json in apps
+KEEP
+FCM requires this
+@react-native-firebase/app
+KEEP
+FCM dependency
+@react-native-firebase/messaging
+KEEP
+Push notifications
+Firebase Auth (phone OTP)
+REMOVE
+Replaced by 2Factor.in
+Firebase Admin SDK
+REMOVE
+Replaced by Supabase JWT
+Firebase email login
+REMOVE
+Replaced by Supabase email auth
+FIREBASE_PRIVATE_KEY in backend
+REMOVE
+No longer needed
+@react-native-firebase/auth
+REMOVE
+No longer needed
+
+2.2 2Factor.in OTP Setup
+Sign up at 2factor.in â€” Indian UPI payment accepted.
+Select Smart OTP â€” no DLT registration required.
+Free trial gives INR 10 credit (about 66 free OTPs for testing).
+Production cost: INR 0.15 per OTP. 500 new users = INR 75 per month.
+Get API key from dashboard. Add to backend .env as TWOFACTOR_API_KEY.
+OTP sent via backend only â€” API key never in frontend or mobile app.
+
+// Backend: POST /auth/send-otp
+// Called by mobile apps to trigger OTP
+async function sendOTP(phone, userType) {
+  const url = `https://2factor.in/API/V1/${process.env.TWOFACTOR_API_KEY}/SMS/${phone}/AUTOGEN`
+  const response = await fetch(url)
+  const { Details: sessionId } = await response.json()
+  // Store sessionId in Redis with 120 second TTL
+  await redis.setex(`otp:${phone}`, 120, sessionId)
+  return { success: true }
+}
+
+// Backend: POST /auth/verify-otp
+async function verifyOTP(phone, otp) {
+  const sessionId = await redis.get(`otp:${phone}`)
+  if (!sessionId) return { error: 'OTP expired' }
+  const url = `https://2factor.in/API/V1/${process.env.TWOFACTOR_API_KEY}/SMS/VERIFY/${sessionId}/${otp}`
+  const response = await fetch(url)
+  const { Details: status } = await response.json()
+  if (status !== 'OTP Matched') return { error: 'Invalid OTP' }
+  // Find or create user in Supabase
+  const { data: user } = await supabase.from(userType).select('*').eq('phone', phone).single()
+  const token = generateJWT(user) // sign with JWT_SECRET
+  return { token, user }
+}
+
+
+2.3 Fix Needed in Already-Built Admin
+Admin Auth Fix â€” 30 minutes
+Change: Firebase signInWithEmailAndPassword â†’ supabase.auth.signInWithPassword
+Change: Firebase onAuthStateChanged â†’ supabase.auth.onAuthStateChange
+Remove: firebase package from admin app
+Remove: firebase.js service file
+Add: Supabase auth calls in authService.js
+Everything else in admin stays exactly as built. No other changes.
+
+
+2.4 Fix Needed in Already-Built Backend
+Backend Auth Fix â€” 30 minutes
+Change: firebaseAdmin.auth().verifyIdToken(token) â†’ supabase.auth.getUser(token)
+Change: Firebase FCM sendToDevice â†’ expo-server-sdk sendPushNotificationsAsync
+Remove: firebase-admin package
+Remove: FIREBASE_PRIVATE_KEY and FIREBASE_CLIENT_EMAIL from .env
+Add: EXPO_ACCESS_TOKEN and TWOFACTOR_API_KEY to .env
+Add: expo-server-sdk package for push notifications
+All routes, controllers, Socket.io, Redis, cron jobs stay exactly as built.
+
+
+Section 3 â€” Maps (MapLibre + MapTiler)
+Remove Google Maps. Remove Mapbox. Use MapLibre with MapTiler tiles permanently.
+
+Platform
+Library
+Install Command
+Mobile apps
+@maplibre/maplibre-react-native
+npx expo install @maplibre/maplibre-react-native
+Admin web
+maplibre-gl and react-map-gl
+npm install maplibre-gl react-map-gl
+Rider app
+Not needed
+Rider uses device maps app via Linking deep link
+
+// MapLibre token is ALWAYS null â€” no account needed
+MapLibreGL.setAccessToken(null)
+
+// Map style URL (same for mobile and web)
+const STYLE = `https://api.maptiler.com/maps/streets/style.json?key=${MAPTILER_KEY}`
+
+// Mobile usage
+<MapLibreGL.MapView styleURL={STYLE} />
+
+// Web admin usage
+<Map mapLib={import('maplibre-gl')} mapStyle={STYLE} />
+
+// Rider navigation â€” deep link to device maps app
+Linking.openURL(`google.navigation:q=${lat},${lng}`) // Android
+Linking.openURL(`maps://maps.apple.com/?daddr=${lat},${lng}`) // iOS
+
+
+Variable
+App
+Value
+EXPO_PUBLIC_MAPTILER_KEY
+All mobile apps
+From cloud.maptiler.com
+VITE_MAPTILER_KEY
+Admin web
+From cloud.maptiler.com
+VITE_GOOGLE_MAPS_KEY
+DELETE
+Not needed
+EXPO_PUBLIC_GOOGLE_MAPS_KEY
+DELETE
+Not needed
+
+Section 4 â€” Finance Model (Complete)
+4.1 Commission Structure by Category
+Category
+Commission Rate
+Why
+Dairy & Eggs
+3%
+Very thin retail margins (3-8%). Stores lose money at 18%.
+Staples and FMCG
+6%
+Low margins. Keeps stores profitable on essentials.
+Bread and Bakery
+8%
+Moderate margins. Bread profit still positive.
+Beverages
+8%
+Packaged drinks have thin margins.
+Snacks
+10%
+Better margins than FMCG. Impulse purchase category.
+Vegetables
+12%
+High margins (40-80%). Local sourcing advantage.
+Fruits
+12%
+High margins. Local sourcing. Price varies daily.
+Household and Care
+15%
+Good margins. Non-food items tolerate higher commission.
+Meat and Fish
+15%
+Premium category. High margin products.
+Organic and Premium
+20%
+Highest margin. Specialty products with premium pricing.
+
+4.2 Platform Markup â€” INR 1 Per Item
+How Platform Markup Works
+Store lists milk at INR 29 (their selling price).
+Platform adds INR 1 markup automatically.
+Customer sees INR 30 on product card.
+Customer pays INR 30. Store receives payout on INR 29.
+ZapKart keeps the INR 1 markup in full.
+Rule: customer_price = minimum of (store_price + 1) and (platform_mrp).
+Never show store_price to customer. Always show customer_price.
+Never mention markup anywhere in the customer app.
+
+
+4.3 Rider Payout Rates (Updated)
+Distance
+Base Rate
+Notes
+Under 2km
+INR 25
+Most urban deliveries fall here
+2km to 4km
+INR 35
+Medium distance
+Above 4km
+INR 50
+Long distance deliveries
+
+Rider bonuses are paid from ZapKart commission budget separately. They are not deducted from delivery fee.
+Bonus Type
+Amount
+Trigger
+Peak hour (6-9 PM, 12-2 PM)
+INR 10 per order
+Admin activates peak mode
+Five-star customer rating
+INR 3 per order
+Customer rates 5 stars
+Complete 8 deliveries in a day
+INR 30 flat
+Milestone bonus
+Complete 12 deliveries in a day
+INR 60 flat
+Milestone bonus
+Complete 15 deliveries in a day
+INR 100 flat
+Milestone bonus
+Bad weather incentive
+INR 15 per order
+Admin activates manually
+
+4.4 Dynamic Delivery Fee Formula
+// pricingCalculator.js â€” IDENTICAL in admin, customer app, and backend
+function calculateOrderPricing(cartItems, distanceKm, settings) {
+
+  // Step 1: Rider base payout
+  let riderPayout
+  if (distanceKm < 2)      riderPayout = settings.rider_payout_under_2km  // 25
+  else if (distanceKm < 4) riderPayout = settings.rider_payout_2_to_4km   // 35
+  else                     riderPayout = settings.rider_payout_above_4km   // 50
+
+  // Step 2: Commission from each item using its category rate
+  const totalCommission = cartItems.reduce((sum, item) =>
+    sum + (item.store_price * item.quantity * item.category_commission_rate), 0)
+
+  // Step 3: Markup revenue (INR 1 per item, capped at MRP)
+  const markupRevenue = cartItems.reduce((sum, item) => {
+    const cp = Math.min(item.store_price + settings.platform_markup_per_item, item.platform_mrp)
+    return sum + ((cp - item.store_price) * item.quantity)
+  }, 0)
+
+  // Step 4: Cart value from customer perspective
+  const cartValue = cartItems.reduce((sum, item) => {
+    const cp = Math.min(item.store_price + settings.platform_markup_per_item, item.platform_mrp)
+    return sum + (cp * item.quantity)
+  }, 0)
+
+  // Step 5: Tiered minimum profit
+  const minimumProfit = getMinimumProfit(cartValue, settings)
+
+  // Step 6: Delivery fee to fill the gap
+  let deliveryFee = (riderPayout + minimumProfit) - totalCommission - markupRevenue
+  if (cartValue >= settings.free_delivery_above) deliveryFee = 0
+  deliveryFee = Math.max(deliveryFee, settings.min_delivery_fee)
+  deliveryFee = Math.min(deliveryFee, settings.max_delivery_fee)
+  deliveryFee = Math.round(deliveryFee)
+
+  return {
+    cartValue, deliveryFee, riderPayout,
+    totalCommission:   Math.round(totalCommission),
+    markupRevenue:     Math.round(markupRevenue),
+    zapkartNetProfit:  Math.round(totalCommission + markupRevenue + deliveryFee - riderPayout),
+    isFreeDelivery:    cartValue >= settings.free_delivery_above,
+    totalCustomerPays: cartValue + deliveryFee,
+  }
+}
+
+function getMinimumProfit(cartValue, settings) {
+  if (cartValue <= 149) return settings.min_profit_tier1  // INR 12
+  if (cartValue <= 249) return settings.min_profit_tier2  // INR 14
+  if (cartValue <= 399) return settings.min_profit_tier3  // INR 15
+  if (cartValue <= 499) return settings.min_profit_tier4  // INR 10
+  return settings.min_profit_tier5                         // INR 8
+}
+
+
+4.5 Platform Settings â€” Updated Values
+-- Run this in Supabase SQL Editor
+UPDATE platform_settings SET
+  rider_payout_under_2km = 25,
+  rider_payout_2_to_4km  = 35,
+  rider_payout_above_4km = 50,
+  min_delivery_fee       = 15,
+  max_delivery_fee       = 45,
+  free_delivery_above    = 499,
+  minimum_order_value    = 99,
+  minimum_profit         = 15
+WHERE id = 1;
+
+-- Add new columns
+ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS platform_markup_per_item numeric DEFAULT 1;
+ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS min_profit_tier1 numeric DEFAULT 12;
+ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS min_profit_tier2 numeric DEFAULT 14;
+ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS min_profit_tier3 numeric DEFAULT 15;
+ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS min_profit_tier4 numeric DEFAULT 10;
+ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS min_profit_tier5 numeric DEFAULT 8;
+ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS bonus_peak_hour numeric DEFAULT 10;
+ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS bonus_five_star numeric DEFAULT 3;
+ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS bonus_milestone_8 numeric DEFAULT 30;
+ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS bonus_milestone_12 numeric DEFAULT 60;
+ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS bonus_milestone_15 numeric DEFAULT 100;
+ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS bonus_bad_weather numeric DEFAULT 15;
+
+-- Add commission rate to categories
+ALTER TABLE categories ADD COLUMN IF NOT EXISTS commission_rate numeric DEFAULT 0.18;
+UPDATE categories SET commission_rate = 0.03 WHERE name ILIKE '%dairy%';
+UPDATE categories SET commission_rate = 0.06 WHERE name ILIKE '%staple%';
+UPDATE categories SET commission_rate = 0.08 WHERE name ILIKE '%beverage%';
+UPDATE categories SET commission_rate = 0.08 WHERE name ILIKE '%bread%' OR name ILIKE '%bakery%';
+UPDATE categories SET commission_rate = 0.10 WHERE name ILIKE '%snack%';
+UPDATE categories SET commission_rate = 0.12 WHERE name ILIKE '%vegetable%' OR name ILIKE '%fruit%';
+UPDATE categories SET commission_rate = 0.15 WHERE name ILIKE '%household%' OR name ILIKE '%meat%';
+UPDATE categories SET commission_rate = 0.20 WHERE name ILIKE '%organic%' OR name ILIKE '%premium%';
+
+-- Add variant support to products
+ALTER TABLE products ADD COLUMN IF NOT EXISTS product_group_id uuid;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS variant_label text;
+
+
+Section 5 â€” AI Shopping Assistant
+Groq API (NOT Claude) for AI Cart
+Use Groq API â€” much cheaper than Claude for this feature.
+Groq free tier: 14,400 requests per day. More than enough at launch.
+Text parsing model: llama-3.3-70b-versatile
+Image reading model: meta-llama/llama-4-scout-17b-16e-instruct
+Voice transcription: whisper-large-v3 (Groq runs this too)
+Sign up: console.groq.com â€” no card needed, get key immediately.
+API key goes in backend .env only. Never in any frontend.
+
+
+5.1 How It Works
+Customer opens AI cart screen from home screen sparkle button.
+Customer types a list, sends a photo, or speaks their request.
+Backend sends to Groq API which extracts grocery items as JSON.
+Backend searches Supabase products for each extracted item.
+Returns matched products with images and prices.
+Customer sees results screen: Edit List or Proceed to Checkout buttons.
+Tapping Proceed adds all items to cart and goes directly to checkout.
+
+5.2 New Files Needed
+File
+App
+Purpose
+src/services/groqService.js
+Backend
+Groq API calls: text, image, voice
+src/routes/ai.routes.js
+Backend
+POST /ai/parse-cart endpoint
+app/ai-cart.jsx
+Customer
+AI shopping assistant screen
+services/aiCartService.js
+Customer
+Calls backend /ai/parse-cart
+ai_search_log table
+Supabase
+Logs searches for admin analytics
+
+Section 6 â€” Build Order and Checkpoints
+Critical Rule
+Build in this exact phase order. Never start a new phase without confirmation.
+Admin and Backend: already built. Apply the small auth fixes first.
+Then build Store app. Then Rider app. Then Customer app.
+Each phase depends on the previous one being tested and working.
+
+
+6.1 Phase 0 â€” Fix Already-Built Apps (Do First)
+Admin: Replace Firebase auth with Supabase email auth (30 min).
+Backend: Replace Firebase Admin JWT with Supabase JWT verification (30 min).
+Backend: Replace Firebase FCM with expo-server-sdk push notifications (30 min).
+Backend: Add 2Factor.in OTP send and verify endpoints.
+Both: Run all existing tests. Verify nothing else broke.
+
+STOP â€” MANDATORY CHECKPOINT. DO NOT PROCEED.
+Phase Phase 0 (Auth Fixes) is complete. Stop all code generation now.
+List every file created with one-line descriptions.
+Ask: 'Phase Phase 0 (Auth Fixes) complete. Please test and confirm before I continue.'
+Wait for user to write confirmed, approved, or continue.
+Fix any reported issues then ask for confirmation again.
+Never proceed without written confirmation. This rule cannot be overridden.
+
+
+6.2 Phase 1 â€” Store Owner App
+Module
+Files
+Build First
+M1 Setup
+Expo project, NativeWind, Zustand, folder structure
+Yes
+M2 Auth
+Phone input, OTP verify, authStore, Supabase session
+Yes
+M3 Registration
+Step 1 store info, Step 2 bank, Step 3 photos
+After M2
+M4 Pending Screen
+Application under review with animated steps
+After M3
+M5 Home Dashboard
+Stats, pending orders card, quick actions
+After M4
+M6 Incoming Order
+Full screen overlay â€” most critical screen
+After M5
+M7 Orders Tab
+4 sections: pending active today history
+After M6
+M8 Products
+List with swipe delete, Add product with earnings preview
+After M7
+M9 Earnings
+Weekly chart, settlement card, payout history
+After M8
+M10 Profile
+Store settings, status toggle, bank details
+After M9
+
+STOP â€” MANDATORY CHECKPOINT. DO NOT PROCEED.
+Phase Phase 1 (Store Owner App) is complete. Stop all code generation now.
+List every file created with one-line descriptions.
+Ask: 'Phase Phase 1 (Store Owner App) complete. Please test and confirm before I continue.'
+Wait for user to write confirmed, approved, or continue.
+Fix any reported issues then ask for confirmation again.
+Never proceed without written confirmation. This rule cannot be overridden.
+
+
+6.3 Phase 2 â€” Rider App
+Module
+Files
+Build First
+M1 Setup
+Expo project, same stack as store app
+Yes
+M2 Auth
+Phone OTP same flow as store app
+Yes
+M3 KYC
+Profile setup, 4 document uploads, pending screen
+After M2
+M4 Home
+Stats, online toggle, incoming order overlay
+After M3
+M5 GPS Service
+locationService.js â€” USE OPUS 4.6 FOR THIS FILE
+After M4
+M6 Active Delivery
+Pickup phase, delivery phase, COD alert
+After M5
+M7 Earnings
+COD balance, weekly earnings, Pay Now button
+After M6
+M8 History
+Past deliveries list
+After M7
+
+STOP â€” MANDATORY CHECKPOINT. DO NOT PROCEED.
+Phase Phase 2 (Rider App) is complete. Stop all code generation now.
+List every file created with one-line descriptions.
+Ask: 'Phase Phase 2 (Rider App) complete. Please test and confirm before I continue.'
+Wait for user to write confirmed, approved, or continue.
+Fix any reported issues then ask for confirmation again.
+Never proceed without written confirmation. This rule cannot be overridden.
+
+
+6.4 Phase 3 â€” Customer App
+Module
+Files
+Build First
+M1 Setup
+Expo project, NativeWind, Zustand, cart store
+Yes
+M2 Auth
+Phone OTP same flow as store and rider
+Yes
+M3 Home
+Category grid, flash deals, banners, AI button
+After M2
+M4 Product
+Product detail, variant selector
+After M3
+M5 Cart
+Bill details, delivery fee display, coupon
+After M4
+M6 Checkout
+Address selection, COD payment, place order
+After M5
+M7 AI Cart
+Voice photo text input, results, edit list, checkout
+After M6
+M8 Tracking
+MapLibre map, rider pin animation, Socket.io
+After M7
+M9 Orders
+History, reorder button
+After M8
+M10 Profile
+User profile, addresses, settings
+After M9
+
+STOP â€” MANDATORY CHECKPOINT. DO NOT PROCEED.
+Phase Phase 3 (Customer App) is complete. Stop all code generation now.
+List every file created with one-line descriptions.
+Ask: 'Phase Phase 3 (Customer App) complete. Please test and confirm before I continue.'
+Wait for user to write confirmed, approved, or continue.
+Fix any reported issues then ask for confirmation again.
+Never proceed without written confirmation. This rule cannot be overridden.
+
+
+Section 7 â€” Design System
+Token
+Value
+Use
+Primary
+#FF6B00
+All CTAs, active states, icons
+Primary Soft
+#FFF0E6
+Badge backgrounds, card tints
+Primary Dark
+#CC5500
+Hover and pressed states
+Background
+#FFFFFF
+All page and screen backgrounds
+Surface
+#F8F9FA
+Cards, inputs, table alternating rows
+Border
+#E9ECEF
+Dividers, input borders, outlines
+Text Primary
+#0D0D0D
+Headings, bold text, labels
+Text Secondary
+#6B7280
+Captions, placeholders, subtitles
+Success
+#16A34A
+Delivered, approved, online
+Error
+#EF4444
+Cancelled, suspended, errors
+Warning
+#F59E0B
+Pending, packing, amber states
+Font
+Inter (Google Fonts)
+All text in all apps
+
+7.1 Status Badge Colours
+Status
+Background
+Text Color
+placed
+#DBEAFE
+#1D4ED8 blue
+confirmed
+#F5F3FF
+#7C3AED purple
+packed
+#FEF3C7
+#D97706 amber
+picked / out_for_delivery
+#FFF0E6
+#FF6B00 orange
+delivered
+#DCFCE7
+#16A34A green
+cancelled
+#FEE2E2
+#EF4444 red
+active / online
+#DCFCE7
+#16A34A green
+pending
+#DBEAFE
+#1D4ED8 blue
+suspended
+#FEE2E2
+#EF4444 red
+
+7.2 Design Fixes Applied in Code
+App
+Fix
+How
+Admin â€” all screens
+Replace $ with INR rupee symbol
+Search codebase for $ and replace
+Admin â€” analytics
+Categories: Dairy Snacks Vegetables not Electronics
+Update chart data source
+Admin â€” dashboard
+All numbers from Supabase
+Remove any hardcoded values
+Admin â€” layout
+Responsive: sidebar desktop, hamburger mobile
+Tailwind md: breakpoints
+Rider â€” home
+Avatar = initials circle not photo
+Use getInitials() helper function
+Rider â€” bottom nav
+Active tab = Bike icon not walking person
+Change icon in nav config
+All apps
+Indian placeholder names only
+Update all empty states
+All apps
+No dark backgrounds anywhere
+White only for all screens
+
+Section 8 â€” Complete Database Schema
+8.1 Supabase Tables
+Table
+Key Columns
+Realtime
+platform_settings
+All configurable platform values â€” one row only
+No
+categories
+id, name, emoji, sort_order, is_active, commission_rate
+No
+stores
+id, owner_phone, store_name, status, rating, commission_rate, expo_push_token
+Yes
+store_documents
+id, store_id, type, url, verified
+No
+products
+id, store_id, category_id, platform_mrp, store_price, stock, product_group_id, variant_label
+No
+customers
+id (Supabase UID), phone, name, email
+No
+riders
+id, phone, status, is_online, cod_balance, cod_limit_reached, weekly_delivery_earnings, expo_push_token
+Yes
+rider_documents
+id, rider_id, type(aadhaar_front/back/licence/selfie), url, verified
+No
+orders
+id, customer_id, store_id, rider_id, status, subtotal, commission_amount, delivery_fee, rider_payout, zapkart_net_profit, total, total_markup_amount
+Yes
+offers
+id, type, code, discount_type, discount_value, valid_from, valid_until, usage_count
+No
+banners
+id, title, image_url, link_type, sort_order, is_active
+No
+payouts
+id, recipient_type, recipient_id, net_amount, direction, status, bank_reference
+No
+audit_log
+id, admin_id, action, target_type, old_value, new_value
+No
+ai_search_log
+id, customer_id, query, items_found, items_missing
+No
+admins
+id, email, name, role
+No
+
+8.2 Important Column Additions
+-- Add expo_push_token to stores and riders for push notifications
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS expo_push_token text;
+ALTER TABLE riders ADD COLUMN IF NOT EXISTS expo_push_token text;
+
+-- Create ai_search_log table
+CREATE TABLE IF NOT EXISTS ai_search_log (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  customer_id  uuid REFERENCES customers(id),
+  query        text,
+  items_found  int DEFAULT 0,
+  items_missing int DEFAULT 0,
+  created_at   timestamptz DEFAULT now()
+);
+
+
+Section 9 â€” Security
+Security Rules â€” All Non-Negotiable
+JWT verification on every single backend route. No exceptions.
+RLS enabled on every Supabase table.
+Rate limiting on every API endpoint.
+Input validation on every POST and PATCH body.
+Service keys never in frontend or mobile app.
+GROQ_API_KEY in backend only. Never in mobile apps.
+TWOFACTOR_API_KEY in backend only.
+All admin actions logged to audit_log table.
+
+
+9.1 Rate Limits
+Endpoint
+Window
+Max Requests
+Key
+All routes (global)
+15 minutes
+100
+IP address
+Send OTP
+10 minutes
+3
+IP address
+Verify OTP
+10 minutes
+5
+Phone number
+Place order
+1 minute
+5
+User ID
+Validate coupon
+1 minute
+5
+User ID
+GPS tracking update
+10 seconds
+3
+User ID
+AI cart parse
+1 minute
+10
+User ID
+Broadcast notification
+1 minute
+5
+Admin ID
+
+9.2 Audit Log Actions
+Insert a row into audit_log for every one of these admin actions:
+APPROVE_STORE, REJECT_STORE, SUSPEND_STORE, REACTIVATE_STORE
+APPROVE_RIDER_KYC, REJECT_RIDER_KYC, SUSPEND_RIDER
+UPDATE_COMMISSION, INITIATE_PAYOUT, MARK_PAYOUT_COMPLETE
+UPDATE_PLATFORM_SETTINGS, REMOVE_PRODUCT, FLAG_PRODUCT
+SEND_BROADCAST_NOTIFICATION
+
+Section 10 â€” Environment Variables
+10.1 Backend (.env) â€” Never Expose to Frontend
+SUPABASE_URL
+=https://xxxx.supabase.co
+SUPABASE_SERVICE_KEY
+=eyJhbGci... (service key â€” backend only)
+REDIS_URL
+=redis://default:xxx@redis.upstash.io
+GROQ_API_KEY
+=gsk_your_groq_key
+TWOFACTOR_API_KEY
+=your_2factor_key
+EXPO_ACCESS_TOKEN
+=your_expo_token
+JWT_SECRET
+=64_character_random_string
+NODE_ENV
+=production
+ALLOWED_ORIGINS
+=https://zapkart-admin.vercel.app,http://localhost:5173
+PORT
+=3000
+
+
+10.2 Admin Web (.env)
+VITE_SUPABASE_URL
+=https://xxxx.supabase.co
+VITE_SUPABASE_ANON_KEY
+=eyJhbGci... (anon key â€” safe for frontend)
+VITE_API_URL
+=https://zapkart-backend.onrender.com
+VITE_MAPTILER_KEY
+=your_maptiler_key
+
+# Remove these â€” no longer needed
+# VITE_FIREBASE_API_KEY
+# VITE_FIREBASE_AUTH_DOMAIN
+# VITE_GOOGLE_MAPS_KEY
+
+
+10.3 Mobile Apps (.env) â€” Same for store, rider, customer
+EXPO_PUBLIC_SUPABASE_URL
+=https://xxxx.supabase.co
+EXPO_PUBLIC_SUPABASE_ANON_KEY
+=eyJhbGci... (anon key)
+EXPO_PUBLIC_API_URL
+=https://zapkart-backend.onrender.com
+EXPO_PUBLIC_MAPTILER_KEY
+=your_maptiler_key
+EXPO_PUBLIC_PROJECT_ID
+=your_expo_project_id (for push tokens)
+
+# Keep these â€” Firebase needed for push notifications (FCM)
+EXPO_PUBLIC_FIREBASE_API_KEY
+=from Firebase console
+EXPO_PUBLIC_FIREBASE_PROJECT_ID
+=zapkart-app
+
+# Remove these â€” no longer needed
+# EXPO_PUBLIC_GOOGLE_MAPS_KEY
+
+
+Section 11 â€” Which AI Model to Use
+Task
+Model
+Reason
+All UI screens and components
+Claude Sonnet 4.5
+Fast, capable, saves credits
+Service files and API calls
+Claude Sonnet 4.5
+Handles well, no need for Opus
+Form logic and validation
+Claude Sonnet 4.5
+Standard complexity
+Database queries
+Claude Sonnet 4.5
+Well within capabilities
+locationService.js (GPS tracking)
+Claude Opus 4.6
+Most critical file, needs best model
+Security middleware
+Claude Opus 4.6
+Security logic must be flawless
+Finance pricing calculator
+Claude Opus 4.6
+Money logic, no room for errors
+Socket.io GPS broadcasting
+Claude Opus 4.6
+Complex real-time architecture
+Simple bug fixes
+Gemini Flash 3.5
+Quick isolated fixes
+UI component styling
+Gemini Flash 3.5
+Fast, good at Tailwind
+
+Model Switching Protocol
+Never switch models mid-feature. Finish the feature with one model.
+When switching: paste DESIGN.md and last 3 built files as context.
+Always commit to GitHub before switching models.
+Use Sonnet 4.5 as your daily driver â€” use Opus only for the 4 critical files above.
+
+
+Section 12 â€” What to Remove vs What to Add
+12.1 Remove Completely
+Item
+From
+Replacement
+Firebase Auth (phone OTP)
+All mobile apps
+2Factor.in + Supabase
+Firebase Admin SDK
+Backend
+Supabase JWT verification
+Firebase email login
+Admin
+Supabase email auth
+@react-native-firebase/auth
+All mobile apps
+Remove package
+firebase-admin npm package
+Backend
+expo-server-sdk
+FIREBASE_PRIVATE_KEY
+Backend .env
+Delete
+FIREBASE_CLIENT_EMAIL
+Backend .env
+Delete
+Google Maps SDK
+All apps
+MapLibre + MapTiler
+Mapbox SDK
+All apps
+Never used, not needed
+Google Sign-In
+All apps
+Not using, removed
+OTPless
+All apps
+Using 2Factor.in instead
+Elderly Easy Mode UI
+Customer app
+Removed completely
+Voice Mode separate UI
+Customer app
+Removed completely
+Flat 18% commission
+All apps
+Variable by category
+Single minimum_profit
+platform_settings
+Tiered minimum profit
+
+12.2 Add
+Item
+To
+Purpose
+2Factor.in OTP
+Backend
+Phone number verification
+expo-server-sdk
+Backend
+Push notifications without Firebase
+groq-sdk
+Backend
+AI shopping assistant
+@maplibre/maplibre-react-native
+Mobile apps
+Maps in tracking screens
+maplibre-gl + react-map-gl
+Admin web
+Store location maps
+Variable commission per category
+categories table
+Fair marketplace economics
+Platform markup INR 1 per item
+platform_settings
+Additional revenue stream
+expo_push_token column
+stores + riders tables
+Expo push notifications
+ai_search_log table
+Supabase
+AI usage analytics
+product_group_id column
+products table
+Product variants
+variant_label column
+products table
+500ml 1L 2L etc
+TWOFACTOR_API_KEY
+Backend .env
+2Factor.in SMS
+EXPO_ACCESS_TOKEN
+Backend .env
+Expo push API
+GROQ_API_KEY
+Backend .env
+Groq AI service
+
+Section 13 â€” Current Status and Today Task
+Current Build Status
+Admin app: BUILT. Apply auth fix (Firebase to Supabase email). 30 minutes.
+Backend: BUILT. Apply auth fix and push notification fix. 30 minutes.
+Store app: IN PROGRESS.
+Rider app: Not started.
+Customer app: Not started.
+
+
+Update the section below at the start of every Antigravity session:
+
+TODAY'S TASK:
+[Replace this line with what you are building today]
+Example: Building Store App Module 6 â€” IncomingOrderOverlay component
+
+CURRENT PHASE:
+[Phase 0 fixes / Phase 1 Store / Phase 2 Rider / Phase 3 Customer]
+
+LAST COMPLETED MODULE:
+[Module name and what was built]
+
+CONFIRMED BY USER:
+[Yes/No â€” was last module confirmed before starting this one]
+
+BEFORE WRITING CODE:
+Confirm you have read all 13 sections of this document.
+Ask: Do you have DESIGN.md and Stitch HTML screens ready?
+
