@@ -49,8 +49,36 @@ router.post('/', verifyToken, requireRole('customer'), orderLimiter, validateCre
       return res.status(400).json({ message: 'One or more selected products are invalid or inactive' })
     }
 
+    // Fetch category commission rates
+    const categoryIds = dbProducts.map(p => p.category_id).filter((v, i, a) => a.indexOf(v) === i)
+    let commsMap = {}
+    if (categoryIds.length > 0) {
+      const { data: comms } = await supabase
+        .from('category_commissions')
+        .select('category_id, commission_rate')
+        .in('category_id', categoryIds)
+      if (comms) {
+        comms.forEach(c => {
+          commsMap[c.category_id] = Number(c.commission_rate)
+        })
+      }
+      
+      const { data: cats } = await supabase
+        .from('categories')
+        .select('id, commission_rate')
+        .in('id', categoryIds)
+      if (cats) {
+        cats.forEach(c => {
+          if (commsMap[c.id] === undefined) {
+            commsMap[c.id] = Number(c.commission_rate || 0.18)
+          }
+        })
+      }
+    }
+
     let subtotal = 0
     const validatedItems = []
+    const calculatorItems = []
 
     for (const item of items) {
       const dbProd = dbProducts.find((p) => p.id === item.productId)
@@ -68,15 +96,20 @@ router.post('/', verifyToken, requireRole('customer'), orderLimiter, validateCre
         total_price: itemPrice * item.quantity,
         dbProd, // Keep reference to update stock later
       })
+
+      calculatorItems.push({
+        productId: dbProd.id,
+        store_price: itemPrice,
+        quantity: item.quantity,
+        platform_mrp: Number(dbProd.platform_mrp || itemPrice),
+        category_commission_rate: commsMap[dbProd.category_id] !== undefined ? commsMap[dbProd.category_id] : 0.18
+      })
     }
 
     // Enforce platform minimum order value check
     if (subtotal < Number(settings.minimum_order_value || 99)) {
       return res.status(400).json({ message: `Minimum order value is ₹${settings.minimum_order_value}` })
     }
-
-    // 4. Run the pricing calculator server-side
-    const pricing = calculateOrderPricing(subtotal, distanceKm, settings)
 
     // 5. Apply coupon discount if applicable
     let discountAmount = 0
@@ -91,9 +124,9 @@ router.post('/', verifyToken, requireRole('customer'), orderLimiter, validateCre
         .eq('type', 'coupon')
         .eq('code', couponCode.toUpperCase())
         .eq('is_active', true)
-        .lte('start_date', now)
-        .gte('end_date', now)
-        .single()
+        .lte('valid_from', now)
+        .gte('valid_until', now)
+        .maybeSingle()
 
       if (offerError || !offer) {
         return res.status(400).json({ message: 'Coupon code is invalid or has expired' })
@@ -105,21 +138,66 @@ router.post('/', verifyToken, requireRole('customer'), orderLimiter, validateCre
         return res.status(400).json({ message: 'Coupon usage limit has been reached' })
       }
 
-      // Calculate discount amount
+      // First-order check
+      if (offer.code === 'FIRST50' || offer.per_user_limit === 1) {
+        const { count, error: countError } = await supabase
+          .from('orders')
+          .select('id', { count: 'exact', head: true })
+          .eq('customer_id', customerId)
+        if (countError) throw countError
+        if (count && count > 0) {
+          return res.status(400).json({ message: 'This coupon is only valid for your first order' })
+        }
+      }
+
+      // Per-user limit check
+      if (offer.per_user_limit && offer.per_user_limit > 1) {
+        const { count: userUses, error: usesError } = await supabase
+          .from('coupon_usage')
+          .select('id', { count: 'exact', head: true })
+          .eq('offer_id', offer.id)
+          .eq('customer_id', customerId)
+        if (usesError) throw usesError
+        if (userUses && userUses >= offer.per_user_limit) {
+          return res.status(400).json({ message: `You have already used this coupon the maximum number of times (${offer.per_user_limit})` })
+        }
+      }
+
+      // Calculate discount amount (temp calculation for budget check)
+      let tempDiscount = 0
       if (offer.discount_type === 'flat') {
-        discountAmount = Number(offer.discount_value || 0)
+        tempDiscount = Number(offer.discount_value || 0)
       } else if (offer.discount_type === 'percentage') {
-        discountAmount = (subtotal * Number(offer.discount_value || 0)) / 100
+        tempDiscount = (subtotal * Number(offer.discount_value || 0)) / 100
       }
       if (offer.max_discount_cap) {
-        discountAmount = Math.min(discountAmount, Number(offer.max_discount_cap))
+        tempDiscount = Math.min(tempDiscount, Number(offer.max_discount_cap))
       }
-      discountAmount = Math.round(Math.max(0, discountAmount))
+      tempDiscount = Math.round(Math.max(0, tempDiscount))
+
+      // Daily budget check
+      if (offer.daily_budget) {
+        const todayStart = new Date()
+        todayStart.setHours(0, 0, 0, 0)
+        const { data: usages, error: usagesError } = await supabase
+          .from('coupon_usage')
+          .select('discount_amount')
+          .eq('offer_id', offer.id)
+          .gte('used_at', todayStart.toISOString())
+        if (usagesError) throw usagesError
+        const totalSpentToday = (usages || []).reduce((sum, u) => sum + Number(u.discount_amount), 0)
+        if (totalSpentToday + tempDiscount > Number(offer.daily_budget)) {
+          return res.status(400).json({ message: "Today's budget limit for this coupon has been reached. Try again tomorrow." })
+        }
+      }
+
+      discountAmount = tempDiscount
       offerId = offer.id
       matchedOffer = offer
     }
 
-    const finalTotal = Math.max(0, pricing.totalCustomerPays - discountAmount)
+    // 4. Run the pricing calculator server-side
+    const pricing = calculateOrderPricing(calculatorItems, distanceKm, settings, matchedOffer)
 
     // 6. Insert Order record in Supabase
     const { data: newOrder, error: insertOrderError } = await supabase
@@ -129,15 +207,20 @@ router.post('/', verifyToken, requireRole('customer'), orderLimiter, validateCre
         store_id: storeId,
         status: 'placed',
         subtotal,
-        commission_amount: pricing.commissionAmount,
+        commission_amount: pricing.totalCommission,
         delivery_fee: pricing.deliveryFee,
-        rider_payout: pricing.riderPayout,
-        zapkart_net_profit: pricing.zapkartNetProfit - discountAmount,
-        discount_amount: discountAmount,
-        total: finalTotal,
+        rider_payout: pricing.riderBasePayout,
+        zapkart_net_profit: pricing.zapkartNetProfit,
+        discount_amount: pricing.discountAmount,
+        total: pricing.finalCustomerPays,
         delivery_address: deliveryAddress,
         payment_method: payment_method || 'cod',
         payment_status: 'pending',
+        offer_id: offerId,
+        discount_absorbed_by: matchedOffer ? matchedOffer.discount_absorbed_by : null,
+        original_cart_value: pricing.cartValue,
+        rider_event_bonus: pricing.riderEventBonus,
+        total_markup_amount: pricing.markupRevenue
       })
       .select('*')
       .single()
@@ -148,14 +231,24 @@ router.post('/', verifyToken, requireRole('customer'), orderLimiter, validateCre
     }
 
     // 7. Insert Order Items records in Supabase
-    const orderItemsPayload = validatedItems.map((item) => ({
-      order_id: newOrder.id,
-      product_id: item.product_id,
-      name: item.name,
-      quantity: item.quantity,
-      store_price: item.store_price,
-      total_price: item.total_price,
-    }))
+    const orderItemsPayload = validatedItems.map((item) => {
+      const dbProd = item.dbProd
+      const commRate = commsMap[dbProd.category_id] !== undefined ? commsMap[dbProd.category_id] : 0.18
+      const markupAmount = Number(settings.platform_markup_per_item || 1)
+      const commAmount = Number(dbProd.store_price) * item.quantity * commRate
+
+      return {
+        order_id: newOrder.id,
+        product_id: item.product_id,
+        name: item.name,
+        quantity: item.quantity,
+        store_price: item.store_price,
+        total_price: item.total_price,
+        platform_markup_amount: markupAmount,
+        commission_rate: commRate,
+        commission_amount: commAmount
+      }
+    })
 
     const { error: insertItemsError } = await supabase
       .from('order_items')
@@ -176,15 +269,25 @@ router.post('/', verifyToken, requireRole('customer'), orderLimiter, validateCre
         .eq('id', item.product_id)
     }
 
-    // 9. Increment offer usage count if coupon applied
+    // 9. Increment offer usage count and insert into coupon_usage if coupon applied
     if (offerId && matchedOffer) {
       await supabase
         .from('offers')
         .update({ usage_count: Number(matchedOffer.usage_count || 0) + 1 })
         .eq('id', offerId)
+
+      await supabase
+        .from('coupon_usage')
+        .insert({
+          offer_id: offerId,
+          customer_id: customerId,
+          order_id: newOrder.id,
+          discount_amount: pricing.discountAmount,
+          used_at: new Date().toISOString()
+        })
     }
 
-    logInfo('Order successfully placed', { orderId: newOrder.id, total: finalTotal })
+    logInfo('Order successfully placed', { orderId: newOrder.id, total: pricing.finalCustomerPays })
 
     return res.status(201).json({
       message: 'Order placed successfully',

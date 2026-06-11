@@ -14,19 +14,18 @@
   "type": "commonjs",
   "dependencies": {
     "@supabase/supabase-js": "^2.106.2",
+    "axios": "^1.7.2",
     "cors": "^2.8.6",
     "dotenv": "16.4.7",
+    "expo-server-sdk": "^3.11.0",
     "express": "^5.2.1",
     "express-rate-limit": "^8.5.2",
     "express-validator": "^7.3.2",
-    "firebase-admin": "^13.10.0",
     "groq-sdk": "^0.8.0",
     "helmet": "^8.2.0",
     "ioredis": "^5.11.0",
     "jsonwebtoken": "^9.0.2",
     "node-cron": "^4.2.1",
-    "socket.io": "^4.8.3",
-    "expo-server-sdk": "^3.11.0",
-    "axios": "^1.7.2"
+    "socket.io": "^4.8.3"
   }
 }

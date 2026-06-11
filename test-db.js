@@ -1,20 +1,24 @@
 require('dotenv').config();
-const { supabase } = require('./config/supabase');
+const axios = require('axios');
 
 async function test() {
   try {
-    const { data, error } = await supabase
-      .from('products')
-      .select('id, name, image_urls, cost_price')
-      .limit(1);
+    const url = `${process.env.SUPABASE_URL}/rest/v1/`;
+    const response = await axios.get(url, {
+      headers: {
+        'apikey': process.env.SUPABASE_SERVICE_KEY,
+        'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_KEY}`
+      }
+    });
 
-    if (error) {
-      console.log('Error selecting columns:', error.message);
-    } else {
-      console.log('Columns exist! Sample data:', data);
+    if (response.data.definitions && response.data.definitions.coupon_usage) {
+      console.log('coupon_usage table properties:', Object.keys(response.data.definitions.coupon_usage.properties));
+    }
+    if (response.data.definitions && response.data.definitions.ai_search_log) {
+      console.log('ai_search_log table properties:', Object.keys(response.data.definitions.ai_search_log.properties));
     }
   } catch (err) {
-    console.error('Execution error:', err);
+    console.error('Error fetching schema:', err.message);
   }
 }
 
