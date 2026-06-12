@@ -52,6 +52,10 @@ app.use(helmet())
 const allowedOrigins = [
   'http://localhost:5173', // Local Vite Admin App
   'http://localhost:8081', // Local Expo Store App (web)
+  'http://localhost:8082', // Local Expo Store App alternate (web)
+  'http://localhost:8083', // Local Expo Store App alternate (web)
+  'http://localhost:8084', // Local Expo Store App alternate (web)
+  'http://localhost:8085', // Local Expo Store App alternate (web)
   'http://localhost:19006', // Expo Web alternate port
 ]
 

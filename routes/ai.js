@@ -42,13 +42,19 @@ router.post('/parse-cart', verifyToken, requireRole('customer'), validateParseCa
     }
 
     let extractedItems = []
+    let aiMessage = ''
 
     if (type === 'text') {
-      extractedItems = await parseTextWithGroq(content)
+      const result = await parseTextWithGroq(content)
+      extractedItems = result.items || []
+      aiMessage = result.message || ''
     } else if (type === 'image') {
       extractedItems = await parseImageWithGroq(content)
+      aiMessage = "I've analyzed your shopping list image and extracted the items below."
     } else if (type === 'voice') {
-      extractedItems = await parseVoiceWithGroq(content)
+      const result = await parseVoiceWithGroq(content)
+      extractedItems = result.items || []
+      aiMessage = result.message || ''
     }
 
     // Search for matching products in database
@@ -91,6 +97,7 @@ router.post('/parse-cart', verifyToken, requireRole('customer'), validateParseCa
     })
 
     res.json({
+      message: aiMessage,
       matched: matchedProducts,
       notFound: notFoundItems,
       totalRequested: extractedItems.length
@@ -108,25 +115,26 @@ router.post('/parse-cart', verifyToken, requireRole('customer'), validateParseCa
  * Parse text shopping list using Groq
  */
 async function parseTextWithGroq(text) {
-  const prompt = `Extract grocery items from this shopping list. Return JSON array with objects containing "name" and "quantity" fields.
+  const prompt = `You are a warm, friendly, and helpful grocery shopping assistant (like ChatGPT).
+Analyze the user's input: "${text}"
 
-Shopping list: "${text}"
-
-Rules:
-- Extract each item as separate object
-- Parse quantities (2L, 1kg, 6 pieces, etc)
-- Normalize names (e.g., "2L milk" -> name: "Milk 2L", quantity: 1)
-- If no quantity specified, use quantity: 1
-- Return only valid JSON array
-
-Example output:
-[{"name": "Milk 2L", "quantity": 1}, {"name": "Eggs", "quantity": 6}]`
+Perform these tasks:
+1. Identify if the user is asking for a recipe, meal idea, or theme (e.g. "paneer butter masala", "birthday party snacks", "weekly essentials"). If so, intelligently expand it into a list of specific, individual grocery items (e.g. for paneer butter masala: paneer, butter, tomato, onion, cream).
+2. Extract the final list of specific grocery items and their quantities. Keep item names simple and relevant.
+3. Formulate a conversational response (message) that is friendly, helpful, and polite. If they asked for a recipe, briefly mention the recipe or how you selected the ingredients. If they just said hi, greet them warmly. Keep it positive, conversational, and under 3 sentences.
+4. Output ONLY a valid JSON object in the following format:
+{
+  "message": "Your friendly, conversational response here.",
+  "items": [
+    {"name": "item name", "quantity": 1}
+  ]
+}`
 
   const completion = await groq.chat.completions.create({
     messages: [
       {
         role: 'system',
-        content: 'You are a grocery list parser. Extract items and quantities from user input. Always return valid JSON array.'
+        content: 'You are a friendly grocery shopping AI assistant. Extract items and quantities. Respond warmly and helpfully. Always return a valid JSON object with "message" and "items".'
       },
       {
         role: 'user',
@@ -138,16 +146,24 @@ Example output:
     max_tokens: 1000
   })
 
-  const responseText = completion.choices[0]?.message?.content || '[]'
+  const responseText = completion.choices[0]?.message?.content || '{}'
 
-  const parsed = normalizeItems(extractJsonArray(responseText))
-  if (parsed.length > 0) return parsed
-
-  // Fallback: simple comma-split parsing if the model returned nothing usable
-  return text.split(',').map(item => ({
-    name: item.trim(),
-    quantity: 1
-  })).filter(it => it.name)
+  try {
+    let jsonText = responseText.trim()
+    if (jsonText.startsWith('```')) {
+      jsonText = jsonText.replace(/```json?\n?/g, '').replace(/```/g, '').trim()
+    }
+    const parsedObj = JSON.parse(jsonText)
+    const items = normalizeItems(parsedObj.items || [])
+    const message = parsedObj.message || "I've processed your list and found these items for you!"
+    return { items, message }
+  } catch (error) {
+    const items = normalizeItems(extractJsonArray(responseText))
+    return {
+      items,
+      message: "Here are the items I found based on your request!"
+    }
+  }
 }
 
 /**
@@ -207,7 +223,7 @@ async function parseImageWithGroq(base64Image) {
   if (!cleaned) return []
 
   const completion = await groq.chat.completions.create({
-    model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+    model: 'llama-3.2-11b-vision-preview',
     max_tokens: 800,
     temperature: 0.2,
     messages: [
@@ -235,7 +251,7 @@ async function parseImageWithGroq(base64Image) {
  */
 async function parseVoiceWithGroq(audioBase64) {
   const cleaned = (audioBase64 || '').replace(/^data:audio\/[a-zA-Z0-9.+-]+;base64,/, '')
-  if (!cleaned) return []
+  if (!cleaned) return { items: [], message: "No voice input detected." }
 
   const tmpFile = path.join(os.tmpdir(), `zapkart-voice-${Date.now()}.m4a`)
   try {
@@ -248,7 +264,7 @@ async function parseVoiceWithGroq(audioBase64) {
     })
 
     const text = (transcription && transcription.text ? transcription.text : '').trim()
-    if (!text) return []
+    if (!text) return { items: [], message: "Could not transcribe audio." }
     return await parseTextWithGroq(text)
   } finally {
     try { fs.unlinkSync(tmpFile) } catch (_) { /* ignore cleanup errors */ }
