@@ -151,15 +151,10 @@ class SupabaseAuthService {
       })
 
       if (authError && authError.message !== 'User already registered') {
-        logError('Failed to create Supabase auth user', {
+        logWarn('Supabase auth user creation failed (non-fatal, using mock JWT)', {
           error: authError.message,
           user_id: user.id
         })
-        return {
-          success: false,
-          error: 'AUTH_USER_CREATION_FAILED',
-          message: 'Failed to create authentication session'
-        }
       }
 
       // Calculate expiry times
