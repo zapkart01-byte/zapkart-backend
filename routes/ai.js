@@ -62,7 +62,7 @@ router.post('/parse-cart', verifyToken, requireRole('customer'), validateParseCa
     const notFoundItems = []
 
     for (const item of extractedItems) {
-      const { data: products } = await supabase
+      let { data: products } = await supabase
         .from('products')
         .select(`
           *,
@@ -74,7 +74,25 @@ router.post('/parse-cart', verifyToken, requireRole('customer'), validateParseCa
         .gt('stock', 0)
         .ilike('name', `%${item.name}%`)
         .limit(1)
-        .single()
+        .maybeSingle()
+
+      // If no exact match, try with exact name match
+      if (!products) {
+        const { data: exactMatch } = await supabase
+          .from('products')
+          .select(`
+            *,
+            categories (id, name, emoji, commission_rate),
+            stores!inner (id, store_name, status, is_open)
+          `)
+          .eq('stores.status', 'active')
+          .eq('is_active', true)
+          .gt('stock', 0)
+          .ilike('name', `${item.name}`)
+          .limit(1)
+          .maybeSingle()
+        products = exactMatch
+      }
 
       if (products) {
         matchedProducts.push({
