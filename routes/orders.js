@@ -86,7 +86,8 @@ router.post('/', verifyToken, requireRole('customer'), orderLimiter, validateCre
         return res.status(400).json({ message: `Insufficient stock for product: ${dbProd.name}` })
       }
       const itemPrice = Number(dbProd.store_price)
-      subtotal += itemPrice * item.quantity
+      const customerPrice = Number(dbProd.customer_price || itemPrice)
+      subtotal += customerPrice * item.quantity
 
       validatedItems.push({
         product_id: dbProd.id,
