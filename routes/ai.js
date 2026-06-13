@@ -8,6 +8,7 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const { supabase } = require('../config/supabase')
+const { logInfo, logError, logWarn } = require('../utils/logger')
 
 // Initialize Groq client
 const groq = new Groq({
@@ -240,26 +241,39 @@ async function parseImageWithGroq(base64Image) {
   const cleaned = (base64Image || '').replace(/^data:image\/[a-zA-Z]+;base64,/, '')
   if (!cleaned) return []
 
-  const completion = await groq.chat.completions.create({
-    model: 'llama-3.2-11b-vision-preview',
-    max_tokens: 800,
-    temperature: 0.2,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${cleaned}` } },
+  const imageModels = ['llama-3.2-11b-vision-preview', 'llama-3.2-90b-vision-preview']
+  let lastError = null
+
+  for (const model of imageModels) {
+    try {
+      const completion = await groq.chat.completions.create({
+        model,
+        max_tokens: 800,
+        temperature: 0.2,
+        messages: [
           {
-            type: 'text',
-            text: 'This is a grocery shopping list image. It may be handwritten in Hindi or English. Extract all grocery items and quantities. Return ONLY a JSON array: [{"name":"item name","quantity":1}]. If this is not a grocery list, return {"error":"not_a_list"}.'
+            role: 'user',
+            content: [
+              { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${cleaned}` } },
+              {
+                type: 'text',
+                text: 'This is a grocery shopping list image. It may be handwritten in Hindi or English. Extract all grocery items and quantities. Return ONLY a JSON array: [{"name":"item name","quantity":1}]. If this is not a grocery list, return {"error":"not_a_list"}.'
+              }
+            ]
           }
         ]
-      }
-    ]
-  })
+      })
 
-  const responseText = completion.choices[0]?.message?.content || '[]'
-  return normalizeItems(extractJsonArray(responseText))
+      const responseText = completion.choices[0]?.message?.content || '[]'
+      return normalizeItems(extractJsonArray(responseText))
+    } catch (err) {
+      lastError = err
+      logWarn(`Image model ${model} failed:`, err.message)
+    }
+  }
+
+  logError('All image models failed', lastError?.message)
+  return []
 }
 
 /**
