@@ -235,13 +235,42 @@ class SupabaseAuthService {
    */
   async refreshSession(refreshToken) {
     try {
-      // Refresh session using Supabase
+      // Try Supabase refresh first (for Supabase-issued tokens)
       const { data, error } = await this.supabaseAnon.auth.refreshSession({
         refresh_token: refreshToken
       })
 
-      if (error) {
-        logWarn('Token refresh failed', { error: error.message })
+      if (!error && data?.session) {
+        const sessionExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
+        const refreshExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+
+        logInfo('Session refreshed successfully via Supabase', {
+          user_id: data.session.user.id
+        })
+
+        return {
+          success: true,
+          session: {
+            access_token: data.session.access_token,
+            refresh_token: data.session.refresh_token,
+            token_type: 'bearer',
+            expires_in: 86400,
+            expires_at: sessionExpiresAt.toISOString(),
+            refresh_expires_at: refreshExpiresAt.toISOString()
+          },
+          user: {
+            id: data.session.user.id,
+            email: data.session.user.email,
+            phone: data.session.user.phone,
+            role: data.session.user.user_metadata?.role
+          }
+        }
+      }
+
+      // Fallback: decode mock JWT refresh token and generate new tokens
+      const decoded = jwt.decode(refreshToken)
+      if (!decoded || decoded.type !== 'refresh') {
+        logWarn('Token refresh failed - invalid token type', { error: error?.message })
         return {
           success: false,
           error: 'INVALID_REFRESH_TOKEN',
@@ -249,36 +278,56 @@ class SupabaseAuthService {
         }
       }
 
-      if (!data.session) {
+      // Check if refresh token is expired
+      if (decoded.exp * 1000 < Date.now()) {
         return {
           success: false,
-          error: 'NO_SESSION',
-          message: 'Failed to refresh session'
+          error: 'REFRESH_TOKEN_EXPIRED',
+          message: 'Refresh token expired, please login again'
         }
       }
 
+      // Fetch user from database
+      const { data: userData, error: userError } = await this.supabaseAdmin
+        .from('users')
+        .select('id, phone, email, role')
+        .eq('id', decoded.sub)
+        .single()
+
+      if (userError || !userData) {
+        logError('User not found for refresh', { user_id: decoded.sub })
+        return {
+          success: false,
+          error: 'USER_NOT_FOUND',
+          message: 'User not found'
+        }
+      }
+
+      // Generate new tokens
       const sessionExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
       const refreshExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+      const newAccessToken = this.generateMockJWT(userData, 86400)
+      const newRefreshToken = this.generateMockJWT(userData, 2592000, 'refresh')
 
-      logInfo('Session refreshed successfully', {
-        user_id: data.session.user.id
+      logInfo('Session refreshed successfully via mock JWT', {
+        user_id: userData.id
       })
 
       return {
         success: true,
         session: {
-          access_token: data.session.access_token,
-          refresh_token: data.session.refresh_token,
+          access_token: newAccessToken,
+          refresh_token: newRefreshToken,
           token_type: 'bearer',
           expires_in: 86400,
           expires_at: sessionExpiresAt.toISOString(),
           refresh_expires_at: refreshExpiresAt.toISOString()
         },
         user: {
-          id: data.session.user.id,
-          email: data.session.user.email,
-          phone: data.session.user.phone,
-          role: data.session.user.user_metadata?.role
+          id: userData.id,
+          email: userData.email,
+          phone: userData.phone,
+          role: userData.role
         }
       }
     } catch (error) {
