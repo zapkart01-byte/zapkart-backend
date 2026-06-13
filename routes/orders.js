@@ -331,11 +331,11 @@ router.get('/', verifyToken, async (req, res) => {
           filterField = 'rider_id'
           filterId = rider.id
         } else {
-          const { data: customer } = await supabase.from('customers').select('id').eq('phone', phone).maybeSingle()
-          if (customer) {
+          const { data: user } = await supabase.from('users').select('id').eq('phone', phone).eq('role', 'customer').maybeSingle()
+          if (user) {
             role = 'customer'
             filterField = 'customer_id'
-            filterId = customer.id
+            filterId = user.id
           } else {
             return res.status(403).json({ message: 'Access denied. Account profile not found.' })
           }

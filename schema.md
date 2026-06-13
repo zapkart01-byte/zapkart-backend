@@ -14,7 +14,7 @@ This is a Foreign Key to `orders.id`.<fk table='orders' column='id'/> |
 | **created_at** | `string (timestamp with time zone)` | — |
 | **recorded_at** | `string (timestamp with time zone)` | — |
 
-## Table: `banners`
+## Table: `banners` 
 | Column | Type | Description |
 | :--- | :--- | :--- |
 | **id** | `string (uuid)` | Note:

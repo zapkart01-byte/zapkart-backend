@@ -30,12 +30,11 @@ const trackingRoutes = require('./routes/tracking')
 const ridersRoutes = require('./routes/riders')
 const aiRoutes = require('./routes/ai')
 
-// Initialize Redis connection
+// Initialize Redis connection (non-fatal — app runs in degraded mode without Redis)
 try {
   initializeRedis()
 } catch (error) {
-  logError('Failed to initialize Redis', { error: error.message })
-  process.exit(1)
+  logError('Failed to initialize Redis — running without Redis (OTP rate limiting and caching degraded)', { error: error.message })
 }
 
 // Initialize Express application

@@ -131,20 +131,21 @@ function requireRole(role) {
         }
         req.riderId = rider.id
       } else if (role === 'customer') {
-        const { data: customer, error } = await supabase
-          .from('customers')
+        const { data: user, error } = await supabase
+          .from('users')
           .select('id')
           .eq('phone', phone)
+          .eq('role', 'customer')
           .single()
 
-        if (error || !customer) {
+        if (error || !user) {
           return res.status(403).json({ 
             error_code: 'FORBIDDEN',
             message: 'Access denied. Customer profile required.',
             request_id: req.id
           })
         }
-        req.customerId = customer.id
+        req.customerId = user.id
       }
 
       next()
