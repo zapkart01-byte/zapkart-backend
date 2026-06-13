@@ -31,7 +31,7 @@ router.post('/parse-cart', verifyToken, requireRole('customer'), validateParseCa
   }
 
   const { type, content } = req.body
-  const customerId = req.user.id
+  const customerId = req.customerId
 
   try {
     // Check if Groq API key is configured
