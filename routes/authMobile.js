@@ -174,4 +174,44 @@ router.post('/mobile/logout', verifyToken, async (req, res) => {
   }
 })
 
+/**
+ * POST /auth/mobile/update-profile
+ * Update user profile (name, email, etc.)
+ */
+router.post('/mobile/update-profile', verifyToken, async (req, res) => {
+  try {
+    const { name, email } = req.body
+    const userId = req.user.user_id
+
+    const updates = { updated_at: new Date().toISOString() }
+    if (name !== undefined) updates.name = name.trim()
+    if (email !== undefined) updates.email = email.trim()
+
+    const supabaseAuthService = require('../services/supabaseAuthService')
+    const { data, error } = await supabaseAuthService.supabaseAdmin
+      .from('users')
+      .update(updates)
+      .eq('id', userId)
+      .select('id, phone, email, role, name, created_at')
+      .single()
+
+    if (error) {
+      logError('Profile update failed', { error: error.message, user_id: userId })
+      return res.status(500).json({
+        error_code: 'UPDATE_FAILED',
+        message: 'Failed to update profile'
+      })
+    }
+
+    logInfo('Profile updated', { user_id: userId })
+    return res.status(200).json({ success: true, user: data })
+  } catch (error) {
+    logError('Profile update error', { error: error.message })
+    return res.status(500).json({
+      error_code: 'INTERNAL_ERROR',
+      message: 'Failed to update profile'
+    })
+  }
+})
+
 module.exports = router
