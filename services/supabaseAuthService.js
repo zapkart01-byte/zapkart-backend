@@ -162,30 +162,13 @@ class SupabaseAuthService {
         }
       }
 
-      // Generate session tokens using Supabase
-      const { data: sessionData, error: sessionError } = await this.supabaseAdmin.auth.admin.generateLink({
-        type: 'magiclink',
-        email: user.email,
-        options: {
-          redirectTo: config.supabase.url
-        }
-      })
-
-      if (sessionError) {
-        logError('Failed to generate session', {
-          error: sessionError.message,
-          user_id: user.id
-        })
-        return {
-          success: false,
-          error: 'SESSION_GENERATION_FAILED',
-          message: 'Failed to generate authentication tokens'
-        }
-      }
-
       // Calculate expiry times
       const sessionExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000) // 24 hours
       const refreshExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // 30 days
+
+      // Generate JWT tokens directly for custom OTP auth flow
+      const accessToken = this.generateMockJWT(user, 86400)
+      const refreshToken = this.generateMockJWT(user, 2592000, 'refresh')
 
       logInfo('Auth session generated', {
         user_id: user.id,
@@ -202,8 +185,8 @@ class SupabaseAuthService {
           role: user.role
         },
         session: {
-          access_token: sessionData.properties?.access_token || this.generateMockJWT(user, 86400),
-          refresh_token: sessionData.properties?.refresh_token || this.generateMockJWT(user, 2592000, 'refresh'),
+          access_token: accessToken,
+          refresh_token: refreshToken,
           token_type: 'bearer',
           expires_in: 86400, // 24 hours in seconds
           expires_at: sessionExpiresAt.toISOString(),
